@@ -141,6 +141,58 @@ def calcular_ritmo_historico(df):
     return ritmos
 
 
+def calcular_alerta_reventon(df, detalles, ritmos):
+    """Detecta animales maduros (ratio 0.7-1.5) que pueden salir en los próximos 2-4 sorteos."""
+    total = len(df)
+    alertas = []
+
+    for num in ANIMALITOS_DICT.keys():
+        if num not in ritmos:
+            continue
+        ritmo = ritmos[num]["promedio"]
+        if ritmo <= 0 or ritmo >= 500:
+            continue
+
+        posiciones = ritmos[num]["apariciones"]
+        if not posiciones:
+            continue
+
+        atraso = total - 1 - posiciones[-1]
+        ratio = atraso / ritmo
+
+        # Solo el "punto dulce": ratio entre 0.7 y 1.5
+        if 0.7 <= ratio <= 1.5:
+            # No recomendar si salió hoy hace poco
+            if detalles[num]["atraso_hoy"] <= 1:
+                continue
+
+            # Calcular ventana estimada (cuántos sorteos faltan para llegar al ritmo)
+            sorteos_restantes = max(1, int(ritmo - atraso))
+
+            # Confianza según qué tan cerca del 1.0 esté
+            distancia = abs(ratio - 1.0)
+            if distancia <= 0.15:
+                confianza = "ALTA"
+            elif distancia <= 0.30:
+                confianza = "MEDIA"
+            else:
+                confianza = "BAJA"
+
+            alertas.append({
+                "num": num,
+                "ratio": round(ratio, 2),
+                "atraso": atraso,
+                "ritmo": ritmo,
+                "ventana": sorteos_restantes,
+                "confianza": confianza,
+                "jales": detalles[num]["jales_in"]
+            })
+
+    # Ordenar por cercanía al punto dulce (1.0) y por jales
+    alertas.sort(key=lambda x: (abs(x["ratio"] - 1.0), -x["jales"]))
+    return alertas[:5]
+
+
 def calcular_fijo_del_dia(df, scores, detalles, ritmos):
     total = len(df)
     candidatos = []
@@ -227,8 +279,6 @@ def predecir_ml(modelo, df):
 
 
 def calcular_ensemble(df, fijo_candidatos, predicciones_ml, jales_aprendidos, detalles):
-    """Combina Fijo + ML + Jales en una sola recomendación."""
-    # Jales entrantes: cuántos animales recientes jalan a cada uno
     ultimos_10 = df.tail(10)["numero"].tolist()
     jales_entrantes = Counter()
     for nr in ultimos_10:
@@ -237,15 +287,11 @@ def calcular_ensemble(df, fijo_candidatos, predicciones_ml, jales_aprendidos, de
 
     max_jal = max(jales_entrantes.values()) if jales_entrantes else 1
 
-    # Score Fijo por animal (0-100)
     fijo_scores = {}
     for c in fijo_candidatos[:20]:
         fijo_scores[c["num"]] = round(c["prob"] * 100, 2)
 
-    # Score ML por animal
     ml_scores = {p["num"]: p["prob_ml"] for p in predicciones_ml}
-
-    # Score Jales por animal
     jal_scores = {n: round(jales_entrantes.get(n, 0) / max_jal * 100, 2) for n in ANIMALITOS_DICT.keys()}
 
     ensemble = []
@@ -253,51 +299,29 @@ def calcular_ensemble(df, fijo_candidatos, predicciones_ml, jales_aprendidos, de
         s_fijo = fijo_scores.get(num, 0)
         s_ml = ml_scores.get(num, 0)
         s_jal = jal_scores.get(num, 0)
-
-        # Ponderación: Fijo 40%, ML 35%, Jales 25%
         score = s_fijo * 0.40 + s_ml * 0.35 + s_jal * 0.25
-
-        # Penalizar si salió hoy hace poco
         if detalles[num]["atraso_hoy"] <= 1:
             score *= 0.3
-
-        ensemble.append({
-            "num": num,
-            "score": round(score, 2),
-            "s_fijo": s_fijo,
-            "s_ml": s_ml,
-            "s_jal": s_jal
-        })
+        ensemble.append({"num": num, "score": round(score, 2), "s_fijo": s_fijo, "s_ml": s_ml, "s_jal": s_jal})
 
     ensemble.sort(key=lambda x: x["score"], reverse=True)
 
-    # Calcular consenso: ¿cuántas fuentes ponen al top 1 en su propio top 3?
     top_ens = ensemble[0]["num"] if ensemble else None
     if top_ens is None:
         return ensemble, 0, "Sin datos"
 
     fuentes_apoyo = 0
-    # ¿Fijo lo tiene en top 3?
-    top3_fijo = [c["num"] for c in fijo_candidatos[:3]]
-    if top_ens in top3_fijo:
+    if top_ens in [c["num"] for c in fijo_candidatos[:3]]:
         fuentes_apoyo += 1
-    # ¿ML lo tiene en top 3?
-    top3_ml = [p["num"] for p in predicciones_ml[:3]]
-    if top_ens in top3_ml:
+    if top_ens in [p["num"] for p in predicciones_ml[:3]]:
         fuentes_apoyo += 1
-    # ¿Jales lo tiene en top 3?
-    top3_jal = [n for n, _ in jales_entrantes.most_common(3)]
-    if top_ens in top3_jal:
+    if top_ens in [n for n, _ in jales_entrantes.most_common(3)]:
         fuentes_apoyo += 1
 
-    if fuentes_apoyo >= 3:
-        consenso = "ALTO"
-    elif fuentes_apoyo == 2:
-        consenso = "MEDIO"
-    elif fuentes_apoyo == 1:
-        consenso = "BAJO"
-    else:
-        consenso = "MUY BAJO"
+    if fuentes_apoyo >= 3: consenso = "ALTO"
+    elif fuentes_apoyo == 2: consenso = "MEDIO"
+    elif fuentes_apoyo == 1: consenso = "BAJO"
+    else: consenso = "MUY BAJO"
 
     return ensemble, fuentes_apoyo, consenso
 
@@ -474,7 +498,7 @@ def armar_resultados(scores, detalles, top_ordenado, atrasos):
 
 def main():
     st.title("🐾 Mega Granjita IA")
-    st.caption("Ensemble · Machine Learning · Fijo del Día · Backtesting · 6 meses")
+    st.caption("Ensemble · ML · Fijo · Alerta Reventón · Backtesting · 6 meses")
 
     if st.button("🔄 Recargar datos"):
         st.cache_data.clear()
@@ -495,21 +519,30 @@ def main():
     individual, top3, tripleta_alt = armar_resultados(scores, detalles, top_ordenado, atrasos)
     ultimo = df.iloc[-1]
 
-    # FIJO
+    # ALERTA DE REVENTÓN
+    alertas = calcular_alerta_reventon(df, detalles, ritmos)
+    if alertas:
+        st.markdown("### 🚨 ALERTA DE REVENTÓN")
+        st.caption("Animales maduros que podrían salir en los próximos sorteos")
+        for al in alertas:
+            emoji_conf = "🔥" if al["confianza"] == "ALTA" else ("🟡" if al["confianza"] == "MEDIA" else "🟢")
+            st.markdown(f"**{emoji_conf} {fmt_num(al['num'])} {ANIMALITOS_DICT[al['num']]}**")
+            st.caption(f"Ratio: {al['ratio']} · Atraso: {al['atraso']} · Ritmo: cada {al['ritmo']} · Ventana: próximos {al['ventana']} sorteos · Confianza: {al['confianza']}")
+        st.markdown("---")
+    else:
+        st.info("🚨 Sin alertas de reventón en este momento. Ningún animal está en el punto dulce.")
+        st.markdown("---")
+
+    # ENSEMBLE
     fijo_candidatos = calcular_fijo_del_dia(df, scores, detalles, ritmos)
     fijo = fijo_candidatos[0] if fijo_candidatos else None
 
-    # ML
     with st.spinner("Entrenando IA..."):
         modelo, mensaje = entrenar_modelo_ml(df)
     predicciones_ml = predecir_ml(modelo, df) if modelo else []
 
-    # ENSEMBLE
     ensemble, fuentes_apoyo, consenso = calcular_ensemble(df, fijo_candidatos, predicciones_ml, jales_aprendidos, detalles)
 
-    # ═══════════════════════════════════════
-    # RECOMENDACIÓN FINAL (ENSEMBLE)
-    # ═══════════════════════════════════════
     if ensemble:
         top_ens = ensemble[0]
         st.markdown("### 🏆 RECOMENDACIÓN FINAL (Ensemble)")
@@ -522,20 +555,20 @@ def main():
         col3.metric("🔗 Jales", f"{top_ens['s_jal']}%")
 
         if consenso == "ALTO":
-            st.success(f"✅ CONSENSO ALTO · Las 3 fuentes apoyan este animal")
+            st.success(f"✅ CONSENSO ALTO · Las 3 fuentes apoyan")
         elif consenso == "MEDIO":
-            st.info(f"🟡 CONSENSO MEDIO · 2 de 3 fuentes lo apoyan")
+            st.info(f"🟡 CONSENSO MEDIO · 2 de 3 fuentes apoyan")
         elif consenso == "BAJO":
-            st.warning(f"⚠️ CONSENSO BAJO · Solo 1 fuente lo apoya")
+            st.warning(f"⚠️ CONSENSO BAJO · Solo 1 fuente apoya")
         else:
-            st.error(f"❌ SIN CONSENSO · Ninguna fuente lo respalda. Precaución.")
+            st.error(f"❌ SIN CONSENSO · Ninguna fuente respalda. Precaución.")
 
         st.markdown("**Top 3 del Ensemble:**")
         for i, item in enumerate(ensemble[:3], 1):
             st.write(f"**#{i} - {fmt_num(item['num'])} {ANIMALITOS_DICT[item['num']]}** — {item['score']}%")
     st.markdown("---")
 
-    # FIJO DEL DÍA
+    # FIJO
     if fijo:
         st.markdown("### 🎯 FIJO DEL DÍA")
         st.markdown(f"## {fmt_num(fijo['num'])} - {ANIMALITOS_DICT[fijo['num']]}")
