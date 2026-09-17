@@ -162,14 +162,10 @@ def calcular_alerta_reventon(df, detalles, ritmos):
 
         # Solo el "punto dulce": ratio entre 0.7 y 1.5
         if 0.7 <= ratio <= 1.5:
-            # No recomendar si salió hoy hace poco
             if detalles[num]["atraso_hoy"] <= 1:
                 continue
 
-            # Calcular ventana estimada (cuántos sorteos faltan para llegar al ritmo)
             sorteos_restantes = max(1, int(ritmo - atraso))
-
-            # Confianza según qué tan cerca del 1.0 esté
             distancia = abs(ratio - 1.0)
             if distancia <= 0.15:
                 confianza = "ALTA"
@@ -188,9 +184,8 @@ def calcular_alerta_reventon(df, detalles, ritmos):
                 "jales": detalles[num]["jales_in"]
             })
 
-    # Ordenar por cercanía al punto dulce (1.0) y por jales
     alertas.sort(key=lambda x: (abs(x["ratio"] - 1.0), -x["jales"]))
-    return alertas[:5]
+    return alertas[:3]  # ← AHORA SON 3
 
 
 def calcular_fijo_del_dia(df, scores, detalles, ritmos):
@@ -524,10 +519,16 @@ def main():
     if alertas:
         st.markdown("### 🚨 ALERTA DE REVENTÓN")
         st.caption("Animales maduros que podrían salir en los próximos sorteos")
-        for al in alertas:
+        for i, al in enumerate(alertas, 1):
             emoji_conf = "🔥" if al["confianza"] == "ALTA" else ("🟡" if al["confianza"] == "MEDIA" else "🟢")
-            st.markdown(f"**{emoji_conf} {fmt_num(al['num'])} {ANIMALITOS_DICT[al['num']]}**")
-            st.caption(f"Ratio: {al['ratio']} · Atraso: {al['atraso']} · Ritmo: cada {al['ritmo']} · Ventana: próximos {al['ventana']} sorteos · Confianza: {al['confianza']}")
+            urgent = " ← MÁS URGENTE" if i == 1 else ""
+            st.markdown(f"**{emoji_conf} #{i} - {fmt_num(al['num'])} {ANIMALITOS_DICT[al['num']]}{urgent}**")
+            horas = al['ventana']
+            if horas == 1:
+                ventana_txt = "próxima 1 hora"
+            else:
+                ventana_txt = f"próximas {horas} horas"
+            st.caption(f"Ratio: {al['ratio']} · Atraso: {al['atraso']} · Ritmo: cada {al['ritmo']} · Ventana: {ventana_txt} · Confianza: {al['confianza']}")
         st.markdown("---")
     else:
         st.info("🚨 Sin alertas de reventón en este momento. Ningún animal está en el punto dulce.")
