@@ -146,9 +146,7 @@ def detectar_alineaciones(df, min_repeticiones=2):
 
 
 def calcular_ritmo_historico(df):
-    """Calcula cada cuántos sorteos sale cada animal en promedio (con 6 meses)."""
     nums = df["numero"].tolist()
-    total = len(nums)
     ritmos = {}
     for num in ANIMALITOS_DICT.keys():
         posiciones = [i for i, n in enumerate(nums) if n == num]
@@ -165,8 +163,6 @@ def calcular_ritmo_historico(df):
 
 
 def calcular_fijo_del_dia(df, scores, detalles, ritmos):
-    """Calcula el animal con más probabilidad de salir en los próximos 12-13 sorteos."""
-    ultima_fecha = df["fecha"].iloc[-1]
     total = len(df)
     candidatos = []
 
@@ -185,7 +181,6 @@ def calcular_fijo_del_dia(df, scores, detalles, ritmos):
 
         ratio = atraso_actual / ritmo
 
-        # Probabilidad estimada: qué tan "maduro" está
         if ratio >= 1.5:
             prob = 0.85
         elif ratio >= 1.0:
@@ -197,11 +192,9 @@ def calcular_fijo_del_dia(df, scores, detalles, ritmos):
         else:
             prob = 0.20
 
-        # Penalizar enjaulados extremos (>4x su ritmo)
         if ratio > 4:
             prob *= 0.5
 
-        # No recomendar si salió recién hoy
         if detalles[num]["atraso_hoy"] <= 1:
             prob *= 0.3
 
@@ -218,128 +211,101 @@ def calcular_fijo_del_dia(df, scores, detalles, ritmos):
     return candidatos[0] if candidatos else None
 
 
-@st.cache_resource
-def entrenar_modelo_ml(df_serializado):
-    """Entrena un Random Forest para predecir si un animal saldrá en los próximos 5 sorteos."""
+def entrenar_modelo_ml(df):
+    """Entrena Random Forest con menos muestras para ser más rápido."""
     try:
-        df = pd.read_json(df_serializado)
-    except:
-        return None, None
+        nums = df["numero"].tolist()
+        total = len(nums)
+        if total < 500:
+            return None, "Datos insuficientes (mínimo 500)"
 
-    nums = df["numero"].tolist()
-    total = len(nums)
-    if total < 200:
-        return None, None
+        X = []
+        y = []
+        lista_numeros = list(ANIMALITOS_DICT.keys())
 
-    # Crear features
-    X = []
-    y = []
-    lista_numeros = list(ANIMALITOS_DICT.keys())
+        # Muestreo cada 6 posiciones para reducir tamaño
+        for i in range(100, total - 5, 6):
+            ventana_60 = nums[max(0, i - 60):i]
+            ventana_20 = nums[max(0, i - 20):i]
+            ventana_10 = nums[max(0, i - 10):i]
 
-    for i in range(60, total - 5):
-        # Para cada animal, calcular features en la posición i
-        ventana_60 = nums[max(0, i - 60):i]
-        ventana_20 = nums[max(0, i - 20):i]
-        ventana_10 = nums[max(0, i - 10):i]
+            for num in lista_numeros:
+                freq_60 = ventana_60.count(num)
+                freq_20 = ventana_20.count(num)
+                freq_10 = ventana_10.count(num)
 
-        for num in lista_numeros:
-            # Features
-            freq_60 = ventana_60.count(num) if ventana_60 else 0
-            freq_20 = ventana_20.count(num) if ventana_20 else 0
-            freq_10 = ventana_10.count(num) if ventana_10 else 0
+                atraso = 999
+                for j in range(i - 1, -1, -1):
+                    if nums[j] == num:
+                        atraso = i - 1 - j
+                        break
 
-            # Atraso
+                X.append([freq_60, freq_20, freq_10, min(atraso, 100)])
+                futuros = nums[i:i + 5]
+                y.append(1 if num in futuros else 0)
+
+        if len(X) < 500:
+            return None, f"Muestras insuficientes ({len(X)})"
+
+        X = np.array(X)
+        y = np.array(y)
+
+        modelo = RandomForestClassifier(
+            n_estimators=30,
+            max_depth=6,
+            random_state=42,
+            n_jobs=-1
+        )
+        modelo.fit(X, y)
+        return modelo, f"Entrenado con {len(X)} muestras"
+    except Exception as e:
+        return None, f"Error: {str(e)}"
+
+
+def predecir_ml(modelo, df):
+    try:
+        nums = df["numero"].tolist()
+        total = len(nums)
+        ventana_60 = nums[-60:]
+        ventana_20 = nums[-20:]
+        ventana_10 = nums[-10:]
+
+        resultados = []
+        for num in ANIMALITOS_DICT.keys():
+            freq_60 = ventana_60.count(num)
+            freq_20 = ventana_20.count(num)
+            freq_10 = ventana_10.count(num)
+
             atraso = 999
-            for j in range(i - 1, -1, -1):
+            for j in range(total - 1, -1, -1):
                 if nums[j] == num:
-                    atraso = i - 1 - j
+                    atraso = total - 1 - j
                     break
 
-            # Jales: cuántas veces salió después de los últimos 5
-            jales_in = 0
-            for j in range(max(0, i - 5), i):
-                for k in range(j + 1, min(j + 4, i)):
-                    if nums[k] == num:
-                        jales_in += 1
+            pred = modelo.predict_proba([[freq_60, freq_20, freq_10, min(atraso, 100)]])[0]
+            prob = pred[1] if len(pred) > 1 else pred[0]
+            resultados.append({"num": num, "prob_ml": round(float(prob) * 100, 2)})
 
-            X.append([freq_60, freq_20, freq_10, min(atraso, 100), jales_in])
-
-            # Target: ¿sale este animal en los próximos 5 sorteos?
-            futuros = nums[i:i + 5]
-            y.append(1 if num in futuros else 0)
-
-    if len(X) < 500:
-        return None, None
-
-    X = np.array(X)
-    y = np.array(y)
-
-    modelo = RandomForestClassifier(
-        n_estimators=50,
-        max_depth=8,
-        random_state=42,
-        n_jobs=-1
-    )
-    modelo.fit(X, y)
-    return modelo, lista_numeros
+        resultados.sort(key=lambda x: x["prob_ml"], reverse=True)
+        return resultados
+    except Exception as e:
+        return []
 
 
-def predecir_ml(modelo, lista_numeros, df, detalles):
-    """Usa el modelo entrenado para predecir las probabilidades actuales."""
-    nums = df["numero"].tolist()
-    total = len(nums)
-    ventana_60 = nums[-60:]
-    ventana_20 = nums[-20:]
-    ventana_10 = nums[-10:]
-
-    predicciones = []
-    for num in lista_numeros:
-        freq_60 = ventana_60.count(num)
-        freq_20 = ventana_20.count(num)
-        freq_10 = ventana_10.count(num)
-
-        atraso = 999
-        for j in range(total - 1, -1, -1):
-            if nums[j] == num:
-                atraso = total - 1 - j
-                break
-
-        jales_in = 0
-        for j in range(total - 5, total):
-            for k in range(j + 1, min(j + 4, total)):
-                if nums[k] == num:
-                    jales_in += 1
-
-        pred = modelo.predict_proba([[freq_60, freq_20, freq_10, min(atraso, 100), jales_in]])[0]
-        prob = pred[1] if len(pred) > 1 else pred[0]
-
-        predicciones.append({
-            "num": num,
-            "prob_ml": round(prob * 100, 2)
-        })
-
-    predicciones.sort(key=lambda x: x["prob_ml"], reverse=True)
-    return predicciones
-
-
-def backtesting_simple(df, ritmos):
-    """Prueba el sistema con los últimos 60 días y mide aciertos."""
+def backtesting_simple(df):
     if len(df) < 500:
         return None
 
     nums = df["numero"].tolist()
     total = len(nums)
-    aciertos_fijo = 0
-    total_pruebas = 0
+    aciertos = 0
+    pruebas = 0
 
-    # Probar cada 12 sorteos (un día)
     for i in range(total - 500, total - 12, 12):
         if i < 100:
             continue
-        # Datos hasta i
         nums_hasta = nums[:i]
-        # Para cada animal, calcular su atraso y ritmo hasta i
-        candidatos_bt = []
+        candidatos = []
         for num in ANIMALITOS_DICT.keys():
             posiciones = [k for k, n in enumerate(nums_hasta) if n == num]
             if not posiciones:
@@ -355,28 +321,25 @@ def backtesting_simple(df, ritmos):
                 continue
             ratio = atraso / ritmo
             if 0.8 <= ratio <= 3:
-                candidatos_bt.append((num, ratio))
+                candidatos.append((num, ratio))
 
-        if not candidatos_bt:
+        if not candidatos:
             continue
 
-        # Tomar el de mayor ratio en rango
-        candidatos_bt.sort(key=lambda x: x[1], reverse=True)
-        fijo_bt = candidatos_bt[0][0]
-
-        # Ver si salió en los próximos 12 sorteos
+        candidatos.sort(key=lambda x: x[1], reverse=True)
+        fijo_bt = candidatos[0][0]
         futuros = nums[i:i + 12]
-        total_pruebas += 1
+        pruebas += 1
         if fijo_bt in futuros:
-            aciertos_fijo += 1
+            aciertos += 1
 
-    if total_pruebas == 0:
+    if pruebas == 0:
         return None
 
     return {
-        "total_pruebas": total_pruebas,
-        "aciertos": aciertos_fijo,
-        "porcentaje": round(aciertos_fijo / total_pruebas * 100, 1)
+        "total_pruebas": pruebas,
+        "aciertos": aciertos,
+        "porcentaje": round(aciertos / pruebas * 100, 1)
     }
 
 
@@ -563,7 +526,6 @@ def main():
 
     if st.button("🔄 Recargar datos"):
         st.cache_data.clear()
-        st.cache_resource.clear()
         st.rerun()
 
     with st.spinner("Leyendo hoja de cálculo..."):
@@ -589,25 +551,28 @@ def main():
         st.markdown(f"**Probabilidad estimada: {round(fijo['prob']*100, 1)}%**")
         st.caption(f"Atraso actual: {fijo['atraso']} · Ritmo: cada {fijo['ritmo']} sorteos · Ratio: {fijo['ratio']}")
         st.info("Ventana recomendada: 12-13 sorteos del día. No cambia hasta mañana.")
-
     st.markdown("---")
 
     # MACHINE LEARNING
-    with st.spinner("Entrenando IA..."):
-        df_serializado = df[["fecha", "numero", "nombre"]].to_json()
-        modelo, lista_nums = entrenar_modelo_ml(df_serializado)
+    st.markdown("### 🤖 Predicción Machine Learning")
+    with st.spinner("Entrenando IA (puede tardar 20-30 seg)..."):
+        modelo, mensaje = entrenar_modelo_ml(df)
 
     if modelo is not None:
-        st.markdown("### 🤖 Predicción Machine Learning")
-        predicciones = predecir_ml(modelo, lista_nums, df, detalles)
-        st.caption("Random Forest · Entrenado con 6 meses · Predice próximos 5 sorteos")
-        for i, p in enumerate(predicciones[:5], 1):
-            st.write(f"**#{i} - {fmt_num(p['num'])} {ANIMALITOS_DICT[p['num']]}** — {p['prob_ml']}% de probabilidad")
-        st.markdown("---")
+        st.success(f"✅ Modelo entrenado · {mensaje}")
+        predicciones = predecir_ml(modelo, df)
+        if predicciones:
+            st.caption("Random Forest · Predice probabilidad de salir en los próximos 5 sorteos")
+            for i, p in enumerate(predicciones[:5], 1):
+                st.write(f"**#{i} - {fmt_num(p['num'])} {ANIMALITOS_DICT[p['num']]}** — {p['prob_ml']}%")
+    else:
+        st.warning(f"⚠️ No se pudo entrenar el modelo · {mensaje}")
+
+    st.markdown("---")
 
     # BACKTESTING
     with st.spinner("Ejecutando backtesting..."):
-        bt = backtesting_simple(df, ritmos)
+        bt = backtesting_simple(df)
 
     if bt:
         st.markdown("### 📊 Backtesting del Fijo")
