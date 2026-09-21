@@ -103,7 +103,6 @@ def detectar_alineaciones(df, salieron_hoy, min_repeticiones=2):
     parejas_top = [p for p, c in conteo.most_common(10) if c >= min_repeticiones]
     resultado = []
     for par in parejas_top:
-        # Excluir si AMBOS ya salieron hoy
         if par[0] in salieron_hoy and par[1] in salieron_hoy:
             continue
         posiciones = []
@@ -135,10 +134,17 @@ def calcular_ritmo_historico(df):
 
 
 def calcular_alerta_reventon(df, detalles, ritmos, salieron_hoy):
+    """Reventón con 4 FILTROS ESTRICTOS:
+    1. Ratio entre 0.9 y 1.1
+    2. Freq(20) > 0
+    3. Al menos 1 jal fuerte
+    4. NO enjaulado (<60 sorteos)
+    """
     total = len(df)
     alertas = []
     for num in ANIMALITOS_DICT.keys():
-        if num in salieron_hoy:  # EXCLUIR los que ya salieron hoy
+        # FILTRO 4: NO salió hoy
+        if num in salieron_hoy:
             continue
         if num not in ritmos:
             continue
@@ -150,19 +156,40 @@ def calcular_alerta_reventon(df, detalles, ritmos, salieron_hoy):
             continue
         atraso = total - 1 - posiciones[-1]
         ratio = atraso / ritmo
-        if 0.7 <= ratio <= 1.5:
-            if detalles[num]["atraso_hoy"] <= 1:
-                continue
-            sorteos_restantes = max(1, int(ritmo - atraso))
-            distancia = abs(ratio - 1.0)
-            if distancia <= 0.15: confianza = "ALTA"
-            elif distancia <= 0.30: confianza = "MEDIA"
-            else: confianza = "BAJA"
-            alertas.append({
-                "num": num, "ratio": round(ratio, 2), "atraso": atraso,
-                "ritmo": ritmo, "ventana": sorteos_restantes,
-                "confianza": confianza, "jales": detalles[num]["jales_in"]
-            })
+
+        # FILTRO 1: Ratio cerrado (0.9 a 1.1)
+        if not (0.9 <= ratio <= 1.1):
+            continue
+
+        # FILTRO 2: Freq(20) > 0 (salió reciente)
+        if detalles[num]["freq_20"] == 0:
+            continue
+
+        # FILTRO 3: Al menos 1 jal fuerte
+        if detalles[num]["jales_in"] < 1:
+            continue
+
+        # FILTRO 4: NO enjaulado
+        if detalles[num]["atraso"] >= 60:
+            continue
+
+        # Confianza según cercanía al 1.0
+        distancia = abs(ratio - 1.0)
+        if distancia <= 0.05:
+            confianza = "ALTA"
+        elif distancia <= 0.10:
+            confianza = "MEDIA"
+        else:
+            confianza = "BAJA"
+
+        sorteos_restantes = max(1, int(ritmo - atraso)) if atraso < ritmo else 1
+
+        alertas.append({
+            "num": num, "ratio": round(ratio, 2), "atraso": atraso,
+            "ritmo": ritmo, "ventana": sorteos_restantes,
+            "confianza": confianza, "jales": detalles[num]["jales_in"],
+            "freq_20": detalles[num]["freq_20"]
+        })
     alertas.sort(key=lambda x: (abs(x["ratio"] - 1.0), -x["jales"]))
     return alertas[:3]
 
@@ -171,10 +198,8 @@ def calcular_fijo_del_dia(df, scores, detalles, ritmos, salieron_hoy):
     total = len(df)
     candidatos = []
     for num in ANIMALITOS_DICT.keys():
-        if num in salieron_hoy:  # EXCLUIR los que ya salieron hoy
-            continue
-        if num not in ritmos or ritmos[num]["promedio"] >= 500:
-            continue
+        if num in salieron_hoy: continue
+        if num not in ritmos or ritmos[num]["promedio"] >= 500: continue
         posiciones = ritmos[num]["apariciones"]
         if not posiciones: continue
         atraso_actual = total - 1 - posiciones[-1]
@@ -261,7 +286,6 @@ def calcular_ensemble(df, fijo_candidatos, predicciones_ml, jales_aprendidos, de
         s_ml = ml_scores.get(num, 0)
         s_jal = jal_scores.get(num, 0)
         score = s_fijo * 0.40 + s_ml * 0.35 + s_jal * 0.25
-        # Penalizar si salió hoy
         if num in salieron_hoy:
             score *= 0.05
         if detalles[num]["atraso_hoy"] <= 1:
@@ -388,28 +412,20 @@ def motor_casi_adivino(df):
 
 
 def armar_resultados(scores, detalles, top_ordenado, atrasos, salieron_hoy):
-    """Arma Top 3, Individual y Tripleta EXCLUYENDO los que salieron hoy."""
-    # Primero: solo los que NO salieron hoy
     top_validos = [(n, s) for n, s in top_ordenado if n not in salieron_hoy]
-
-    # Si no alcanzan, completar con los que salieron hoy
     if len(top_validos) < 3:
         extra = [(n, s) for n, s in top_ordenado if n not in [x[0] for x in top_validos]]
         top_validos.extend(extra)
-
     top3 = []
     for num, sc in top_validos[:3]:
         top3.append({"numero": fmt_num(num), "int_num": num, "nombre": ANIMALITOS_DICT[num], "score": sc, "detalle": detalles[num]})
     individual = top3[0] if top3 else None
     nums_oficiales = set([t["int_num"] for t in top3])
-
     candidatos = [(n, s) for n, s in top_validos if n not in nums_oficiales and s > 0][:20]
-
     caliente = None
     for n, s in candidatos:
         if detalles[n]["freq_20"] >= 2: caliente = n; break
     if caliente is None and candidatos: caliente = candidatos[0][0]
-
     maduro = None
     for n, s in candidatos:
         if n == caliente: continue
@@ -418,7 +434,6 @@ def armar_resultados(scores, detalles, top_ordenado, atrasos, salieron_hoy):
     if maduro is None:
         for n, s in candidatos:
             if n != caliente: maduro = n; break
-
     jale = None
     for n, s in candidatos:
         if n in (caliente, maduro): continue
@@ -426,12 +441,10 @@ def armar_resultados(scores, detalles, top_ordenado, atrasos, salieron_hoy):
     if jale is None:
         for n, s in candidatos:
             if n not in (caliente, maduro): jale = n; break
-
     t_alt = [n for n in [caliente, maduro, jale] if n is not None]
     for n, s in candidatos:
         if len(t_alt) >= 3: break
         if n not in t_alt: t_alt.append(n)
-
     tripleta_alt = []
     for num in t_alt[:3]:
         tripleta_alt.append({"numero": fmt_num(num), "int_num": num, "nombre": ANIMALITOS_DICT[num], "score": scores[num], "detalle": detalles[num]})
@@ -440,7 +453,7 @@ def armar_resultados(scores, detalles, top_ordenado, atrasos, salieron_hoy):
 
 def main():
     st.title("🐾 Mega Granjita IA")
-    st.caption("Ensemble · ML · Fijo · Alerta Reventón · Backtesting · Sin repetidos de hoy")
+    st.caption("Ensemble · ML · Fijo · Reventón 4-filtros · Backtesting")
 
     if st.button("🔄 Recargar datos"):
         st.cache_data.clear()
@@ -463,21 +476,21 @@ def main():
 
     st.caption(f"📅 Día actual: {ultimo['fecha']} · Ya salieron hoy: {len(salieron_hoy)} animalitos")
 
-    # ALERTA DE REVENTÓN
+    # ALERTA DE REVENTÓN (CON 4 FILTROS)
     alertas = calcular_alerta_reventon(df, detalles, ritmos, salieron_hoy)
     if alertas:
-        st.markdown("### 🚨 ALERTA DE REVENTÓN")
-        st.caption("Animales maduros (sin repetidos de hoy)")
+        st.markdown("### 🚨 ALERTA DE REVENTÓN (4 filtros)")
+        st.caption("Ratio 0.9-1.1 · Freq(20)>0 · Jales≥1 · NO enjaulado")
         for i, al in enumerate(alertas, 1):
             emoji_conf = "🔥" if al["confianza"] == "ALTA" else ("🟡" if al["confianza"] == "MEDIA" else "🟢")
             urgent = " ← MÁS URGENTE" if i == 1 else ""
             st.markdown(f"**{emoji_conf} #{i} - {fmt_num(al['num'])} {ANIMALITOS_DICT[al['num']]}{urgent}**")
             horas = al['ventana']
             ventana_txt = "próxima 1 hora" if horas == 1 else f"próximas {horas} horas"
-            st.caption(f"Ratio: {al['ratio']} · Atraso: {al['atraso']} · Ritmo: cada {al['ritmo']} · Ventana: {ventana_txt} · Confianza: {al['confianza']}")
+            st.caption(f"Ratio: {al['ratio']} · Atraso: {al['atraso']} · Ritmo: {al['ritmo']} · Freq(20): {al['freq_20']} · Jales: {al['jales']} · Confianza: {al['confianza']}")
         st.markdown("---")
     else:
-        st.info("🚨 Sin alertas de reventón. Ningún animal maduro sin repetir de hoy.")
+        st.info("🚨 Sin alertas de reventón con los 4 filtros. Ningún animal cumple los criterios.")
         st.markdown("---")
 
     # ENSEMBLE
