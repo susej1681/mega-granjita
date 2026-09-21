@@ -49,7 +49,7 @@ def fmt_num(n):
     return f"{n:02d}"
 
 
-@st.cache_data(ttl=120)
+@st.cache_data(ttl=30)
 def cargar_historial_google_sheets():
     try:
         df_raw = pd.read_csv(GOOGLE_SHEET_URL, header=None)
@@ -345,9 +345,10 @@ def motor_casi_adivino(df):
         idxs = df[df["numero"] == num].index.tolist()
         atrasos[num] = total - 1 - idxs[-1] if idxs else total
 
-    # --- FECHA REAL DE HOY (VENEZUELA) ---
+    # --- FECHA REAL DE HOY Y LÍMITE ESTRICTO DE 12 SORTEOS ---
     fecha_hoy = fecha_hoy_ve()
-    df_hoy = df[df["fecha"] == fecha_hoy]
+    # Aquí aplicamos el límite de 12 animales únicos para el día de hoy
+    df_hoy = df[df["fecha"] == fecha_hoy].drop_duplicates(subset=["numero"]).tail(12)
     total_hoy = len(df_hoy)
     salieron_hoy = set(df_hoy["numero"].tolist())
     atraso_hoy = {}
@@ -472,7 +473,7 @@ def main():
     individual, top3, tripleta_alt = armar_resultados(scores, detalles, top_ordenado, atrasos, salieron_hoy)
     ultimo = df.iloc[-1]
 
-    # --- FECHA REAL DE HOY ---
+    # --- FECHA REAL DE HOY Y CONTEO ESTRICTO ---
     st.caption(f"📅 Día actual: {fecha_hoy_ve()} · Ya salieron hoy: {len(salieron_hoy)} animalitos")
 
     alertas = calcular_alerta_reventon(df, detalles, ritmos, salieron_hoy)
@@ -576,9 +577,10 @@ def main():
     st.caption(f"Fecha: {ultimo['fecha']}")
     st.markdown("---")
 
+    # --- CORRECCIÓN: SOLO 12 ANIMALES Y SIN REPETIDOS EN EL HISTORIAL ---
     if fecha_dia_anterior:
         st.markdown(f"### 🔁 Animales del {fecha_dia_anterior}")
-        df_dia = df[df["fecha"] == fecha_dia_anterior].reset_index(drop=True)
+        df_dia = df[df["fecha"] == fecha_dia_anterior].drop_duplicates(subset=["numero"]).tail(12).reset_index(drop=True)
         for i, row in df_dia.iterrows():
             num = int(row["numero"])
             d = detalles.get(num, {})
@@ -620,10 +622,10 @@ def main():
     with st.expander("📋 Ver últimos 30 sorteos"):
         st.dataframe(df.tail(30)[["fecha", "numero", "nombre"]], use_container_width=True)
 
-    # --- AUTO-REFRESCO CADA 60 SEGUNDOS ---
+    # --- AUTO-REFRESCO CADA 30 SEGUNDOS ---
     if "ultimo_refresco" not in st.session_state:
         st.session_state.ultimo_refresco = time.time()
-    if time.time() - st.session_state.ultimo_refresco > 60:
+    if time.time() - st.session_state.ultimo_refresco > 30:
         st.session_state.ultimo_refresco = time.time()
         st.rerun()
 
