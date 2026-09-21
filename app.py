@@ -1,9 +1,22 @@
 import streamlit as st
 import pandas as pd
 import re
+import time
 from collections import Counter
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
+from datetime import datetime
+
+# --- ZONA HORARIA VENEZUELA ---
+try:
+    from zoneinfo import ZoneInfo
+    TZ_VE = ZoneInfo("America/Caracas")
+except ImportError:
+    import pytz
+    TZ_VE = pytz.timezone("America/Caracas")
+
+def fecha_hoy_ve():
+    return datetime.now(TZ_VE).strftime("%d/%m/%Y")
 
 st.set_page_config(
     page_title="Mega Granjita - IA",
@@ -134,16 +147,9 @@ def calcular_ritmo_historico(df):
 
 
 def calcular_alerta_reventon(df, detalles, ritmos, salieron_hoy):
-    """Reventón con 4 FILTROS ESTRICTOS:
-    1. Ratio entre 0.9 y 1.1
-    2. Freq(20) > 0
-    3. Al menos 1 jal fuerte
-    4. NO enjaulado (<60 sorteos)
-    """
     total = len(df)
     alertas = []
     for num in ANIMALITOS_DICT.keys():
-        # FILTRO 4: NO salió hoy
         if num in salieron_hoy:
             continue
         if num not in ritmos:
@@ -156,24 +162,14 @@ def calcular_alerta_reventon(df, detalles, ritmos, salieron_hoy):
             continue
         atraso = total - 1 - posiciones[-1]
         ratio = atraso / ritmo
-
-        # FILTRO 1: Ratio cerrado (0.9 a 1.1)
         if not (0.9 <= ratio <= 1.1):
             continue
-
-        # FILTRO 2: Freq(20) > 0 (salió reciente)
         if detalles[num]["freq_20"] == 0:
             continue
-
-        # FILTRO 3: Al menos 1 jal fuerte
         if detalles[num]["jales_in"] < 1:
             continue
-
-        # FILTRO 4: NO enjaulado
         if detalles[num]["atraso"] >= 60:
             continue
-
-        # Confianza según cercanía al 1.0
         distancia = abs(ratio - 1.0)
         if distancia <= 0.05:
             confianza = "ALTA"
@@ -181,9 +177,7 @@ def calcular_alerta_reventon(df, detalles, ritmos, salieron_hoy):
             confianza = "MEDIA"
         else:
             confianza = "BAJA"
-
         sorteos_restantes = max(1, int(ritmo - atraso)) if atraso < ritmo else 1
-
         alertas.append({
             "num": num, "ratio": round(ratio, 2), "atraso": atraso,
             "ritmo": ritmo, "ventana": sorteos_restantes,
@@ -350,7 +344,9 @@ def motor_casi_adivino(df):
     for num in ANIMALITOS_DICT.keys():
         idxs = df[df["numero"] == num].index.tolist()
         atrasos[num] = total - 1 - idxs[-1] if idxs else total
-    fecha_hoy = df["fecha"].iloc[-1]
+
+    # --- FECHA REAL DE HOY (VENEZUELA) ---
+    fecha_hoy = fecha_hoy_ve()
     df_hoy = df[df["fecha"] == fecha_hoy]
     total_hoy = len(df_hoy)
     salieron_hoy = set(df_hoy["numero"].tolist())
@@ -361,6 +357,7 @@ def motor_casi_adivino(df):
             pos = df_hoy.index.get_loc(idxs_hoy[-1])
             atraso_hoy[num] = total_hoy - 1 - pos
         else: atraso_hoy[num] = 999
+
     jales_aprendidos = aprender_jales(df, max_atraso=3)
     ultimos_10 = df.tail(10)["numero"].tolist()
     jales_entrantes = Counter()
@@ -371,17 +368,18 @@ def motor_casi_adivino(df):
     max_f20 = max(freq_rec20.values()) if freq_rec20 else 1
     max_atr = max(atrasos.values()) if atrasos else 1
     max_jal = max(jales_entrantes.values()) if jales_entrantes else 1
+
     fechas_unicas = df["fecha"].unique().tolist()
     ultima_fecha_str = fechas_unicas[-1]
-    ultima_fecha_dt = pd.to_datetime(ultima_fecha_str, format="%d/%m/%Y", errors="coerce")
-    hoy_real_dt = pd.Timestamp.now().normalize()
+
+    # --- DÍA ANTERIOR CORREGIDO ---
     fecha_dia_anterior = None
-    if pd.notna(ultima_fecha_dt):
-        if ultima_fecha_dt.normalize() == hoy_real_dt:
-            if len(fechas_unicas) >= 2:
-                fecha_dia_anterior = fechas_unicas[-2]
-        else:
-            fecha_dia_anterior = ultima_fecha_str
+    if ultima_fecha_str == fecha_hoy:
+        if len(fechas_unicas) >= 2:
+            fecha_dia_anterior = fechas_unicas[-2]
+    else:
+        fecha_dia_anterior = ultima_fecha_str
+
     scores = {}; detalles = {}
     for num in ANIMALITOS_DICT.keys():
         fv = freq_ventana.get(num, 0); f20 = freq_rec20.get(num, 0); f30 = freq_rec30.get(num, 0)
@@ -474,9 +472,9 @@ def main():
     individual, top3, tripleta_alt = armar_resultados(scores, detalles, top_ordenado, atrasos, salieron_hoy)
     ultimo = df.iloc[-1]
 
-    st.caption(f"📅 Día actual: {ultimo['fecha']} · Ya salieron hoy: {len(salieron_hoy)} animalitos")
+    # --- FECHA REAL DE HOY ---
+    st.caption(f"📅 Día actual: {fecha_hoy_ve()} · Ya salieron hoy: {len(salieron_hoy)} animalitos")
 
-    # ALERTA DE REVENTÓN (CON 4 FILTROS)
     alertas = calcular_alerta_reventon(df, detalles, ritmos, salieron_hoy)
     if alertas:
         st.markdown("### 🚨 ALERTA DE REVENTÓN (4 filtros)")
@@ -493,7 +491,6 @@ def main():
         st.info("🚨 Sin alertas de reventón con los 4 filtros. Ningún animal cumple los criterios.")
         st.markdown("---")
 
-    # ENSEMBLE
     fijo_candidatos = []
     for num in ANIMALITOS_DICT.keys():
         if num in salieron_hoy: continue
@@ -538,7 +535,6 @@ def main():
             st.write(f"**#{i} - {fmt_num(item['num'])} {ANIMALITOS_DICT[item['num']]}** — {item['score']}%")
     st.markdown("---")
 
-    # FIJO
     if fijo:
         st.markdown("### 🎯 FIJO DEL DÍA")
         st.markdown(f"## {fmt_num(fijo['num'])} - {ANIMALITOS_DICT[fijo['num']]}")
@@ -548,7 +544,6 @@ def main():
         st.warning("Sin candidatos válidos para el Fijo.")
     st.markdown("---")
 
-    # ML
     st.markdown("### 🤖 Predicción Machine Learning")
     if modelo:
         st.success(f"✅ {mensaje}")
@@ -558,7 +553,6 @@ def main():
         st.warning(f"⚠️ {mensaje}")
     st.markdown("---")
 
-    # BACKTESTING
     with st.spinner("Ejecutando backtesting..."):
         bt = backtesting_simple(df)
     if bt:
@@ -625,6 +619,13 @@ def main():
 
     with st.expander("📋 Ver últimos 30 sorteos"):
         st.dataframe(df.tail(30)[["fecha", "numero", "nombre"]], use_container_width=True)
+
+    # --- AUTO-REFRESCO CADA 60 SEGUNDOS ---
+    if "ultimo_refresco" not in st.session_state:
+        st.session_state.ultimo_refresco = time.time()
+    if time.time() - st.session_state.ultimo_refresco > 60:
+        st.session_state.ultimo_refresco = time.time()
+        st.rerun()
 
 
 if __name__ == "__main__":
