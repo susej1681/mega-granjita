@@ -18,6 +18,8 @@ SORTEOS_POR_DIA = 12
 DIAS_VENTANA = 5
 VENTANA_SORTEOS = SORTEOS_POR_DIA * DIAS_VENTANA
 DESCARTE_ATRASO = 60
+PERSISTENCIA_LIMITE = 3
+UMBRAL_ESPEJO = 15
 
 ANIMALITOS_DICT = {
     0: "Delfín", 1: "Carnero", 2: "Toro", 3: "Ciempiés", 4: "Alacrán",
@@ -30,9 +32,6 @@ ANIMALITOS_DICT = {
     35: "Jirafa", 36: "Culebra", 100: "Ballena"
 }
 
-# ═══════════════════════════════════════════════════
-# MEJORA 1: CLASIFICACIÓN POR ECOSISTEMAS
-# ═══════════════════════════════════════════════════
 ECOSISTEMAS = {
     "PLUMAS": [6, 7, 9, 11, 14, 18, 28, 36],
     "DEPREDADORES": [5, 10, 15, 16, 24, 30],
@@ -49,66 +48,6 @@ def ecosistema_de(num):
     return "DESCONOCIDO"
 
 
-def calcular_ecosistema_probable(df):
-    """Analiza el histórico y predice qué ecosistema es más probable hoy."""
-    if df.empty or len(df) < 30:
-        return None, {}
-
-    # Ventana reciente: últimos 60 sorteos
-    df_rec = df.tail(60)
-    nums_rec = df_rec["numero"].tolist()
-    conteo_eco = Counter([ecosistema_de(n) for n in nums_rec])
-
-    # Ritmo por ecosistema (cada cuántos sorteos sale)
-    total_hist = len(df)
-    nums_hist = df["numero"].tolist()
-    atraso_eco = {}
-    for eco, lista in ECOSISTEMAS.items():
-        pos = [i for i, n in enumerate(nums_hist) if n in lista]
-        atraso_eco[eco] = total_hist - 1 - pos[-1] if pos else total_hist
-
-    # Score por ecosistema: más frecuencia reciente + atraso moderado
-    max_f = max(conteo_eco.values()) if conteo_eco else 1
-    max_a = max(atraso_eco.values()) if atraso_eco else 1
-    scores_eco = {}
-    for eco in ECOSISTEMAS.keys():
-        f = conteo_eco.get(eco, 0) / max_f
-        a = atraso_eco.get(eco, 0) / max_a
-        # Queremos alta frecuencia reciente Y atraso moderado
-        scores_eco[eco] = round((f * 0.6 + a * 0.4) * 100, 2)
-
-    eco_top = max(scores_eco.items(), key=lambda x: x[1])
-    return eco_top[0], scores_eco
-
-
-# ═══════════════════════════════════════════════════
-# MEJORA 3: MATRIZ POR DÍA DE LA SEMANA
-# ═══════════════════════════════════════════════════
-def calcular_prob_dia_semana(df, fecha_actual=None):
-    """Calcula qué tan probable es cada animal según el día de la semana actual.
-    Retorna un dict: {num: porcentaje_del_total_de_ese_dia}."""
-    if df.empty:
-        return {}
-
-    if fecha_actual is None:
-        fecha_actual = df["fecha_dt"].iloc[-1]
-
-    dia_semana = fecha_actual.weekday()  # 0=lunes, 6=domingo
-
-    # Filtrar solo días de ese mismo día de la semana
-    df_dia = df[df["fecha_dt"].apply(lambda x: x.weekday() == dia_semana)]
-    if df_dia.empty:
-        return {}
-
-    total_dia = len(df_dia)
-    conteo = Counter(df_dia["numero"].tolist())
-    prob = {num: round(c / total_dia * 100, 2) for num, c in conteo.items()}
-    return prob
-
-
-# ═══════════════════════════════════════════════════
-# CARGA DE DATOS
-# ═══════════════════════════════════════════════════
 def fmt_num(n):
     if n == 100: return "00"
     if n == 0: return "0"
@@ -182,8 +121,7 @@ def detectar_alineaciones(df, salieron_hoy, min_repeticiones=2):
     parejas_top = [p for p, c in conteo.most_common(10) if c >= min_repeticiones]
     resultado = []
     for par in parejas_top:
-        if par[0] in salieron_hoy and par[1] in salieron_hoy:
-            continue
+        if par[0] in salieron_hoy and par[1] in salieron_hoy: continue
         posiciones = []
         for i in range(total - 5):
             ventana = set(nums[i:i + 5])
@@ -206,15 +144,12 @@ def calcular_ritmo_historico(df):
         posiciones = [i for i, n in enumerate(nums) if n == num]
         if len(posiciones) >= 2:
             diffs = [posiciones[k + 1] - posiciones[k] for k in range(len(posiciones) - 1)]
-            ritmos[num] = {"promedio": round(sum(diffs) / len(diffs), 1), "veces_total": len(posiciones), "apariciones": posiciones}
+            ritmos[num] = {"promedio": round(sum(diffs) / len(diffs), 1), "apariciones": posiciones}
         else:
-            ritmos[num] = {"promedio": 999, "veces_total": len(posiciones), "apariciones": posiciones}
+            ritmos[num] = {"promedio": 999, "apariciones": posiciones}
     return ritmos
 
 
-# ═══════════════════════════════════════════════════
-# FILTROS NUEVOS: CONGELADOS Y ANTI-AYER
-# ═══════════════════════════════════════════════════
 def calcular_congelados(df, ritmos):
     total = len(df)
     congelados = set()
@@ -240,8 +175,157 @@ def calcular_penal_ayer(df):
     return set([n for n, c in conteo.items() if c >= 3])
 
 
+def calcular_ecosistema_probable(df):
+    if df.empty or len(df) < 30:
+        return None, {}
+    df_rec = df.tail(60)
+    nums_rec = df_rec["numero"].tolist()
+    conteo_eco = Counter([ecosistema_de(n) for n in nums_rec])
+    total_hist = len(df)
+    nums_hist = df["numero"].tolist()
+    atraso_eco = {}
+    for eco, lista in ECOSISTEMAS.items():
+        pos = [i for i, n in enumerate(nums_hist) if n in lista]
+        atraso_eco[eco] = total_hist - 1 - pos[-1] if pos else total_hist
+    max_f = max(conteo_eco.values()) if conteo_eco else 1
+    max_a = max(atraso_eco.values()) if atraso_eco else 1
+    scores_eco = {}
+    for eco in ECOSISTEMAS.keys():
+        f = conteo_eco.get(eco, 0) / max_f
+        a = atraso_eco.get(eco, 0) / max_a
+        scores_eco[eco] = round((f * 0.6 + a * 0.4) * 100, 2)
+    eco_top = max(scores_eco.items(), key=lambda x: x[1])
+    return eco_top[0], scores_eco
+
+
+def calcular_prob_dia_semana(df, fecha_actual=None):
+    if df.empty: return {}
+    if fecha_actual is None:
+        fecha_actual = df["fecha_dt"].iloc[-1]
+    dia_semana = fecha_actual.weekday()
+    df_dia = df[df["fecha_dt"].apply(lambda x: x.weekday() == dia_semana)]
+    if df_dia.empty: return {}
+    total_dia = len(df_dia)
+    conteo = Counter(df_dia["numero"].tolist())
+    return {num: round(c / total_dia * 100, 2) for num, c in conteo.items()}
+
+
 # ═══════════════════════════════════════════════════
-# ALERTA DE REVENTÓN (4 filtros + congelados)
+# NUEVO: MÓDULO ANTI-BLOQUEO DE BANCA
+# ═══════════════════════════════════════════════════
+def calcular_carga_banca(df, scores, detalles, salieron_hoy):
+    total = len(df)
+    fecha_hoy = df["fecha"].iloc[-1]
+    df_hoy = df[df["fecha"] == fecha_hoy]
+    total_hoy = len(df_hoy)
+    top_candidatos = [(n, s) for n, s in sorted(scores.items(), key=lambda x: x[1], reverse=True) if n not in salieron_hoy][:15]
+    cargados = []
+    for num, sc in top_candidatos:
+        if total_hoy >= PERSISTENCIA_LIMITE and num not in salieron_hoy:
+            if num in [n for n, _ in top_candidatos[:3]]:
+                if detalles[num]["freq_20"] >= 2 or detalles[num]["jales_in"] >= 2:
+                    cargados.append({
+                        "num": num,
+                        "score_original": sc,
+                        "atraso_hoy": total_hoy,
+                        "freq_20": detalles[num]["freq_20"],
+                        "jales": detalles[num]["jales_in"]
+                    })
+    return cargados
+
+
+def aplicar_anti_bloqueo(df, scores, detalles, salieron_hoy, carga_banca):
+    scores_ajustados = scores.copy()
+    detalles_ajustados = {k: v.copy() for k, v in detalles.items()}
+    plan_b = None
+    cargados_nums = [c["num"] for c in carga_banca]
+    for c in carga_banca:
+        num = c["num"]
+        scores_ajustados[num] = round(scores_ajustados[num] * 0.5, 2)
+        detalles_ajustados[num]["cargado_banca"] = True
+        detalles_ajustados[num]["score_original"] = c["score_original"]
+    top_nuevo = sorted(scores_ajustados.items(), key=lambda x: x[1], reverse=True)
+    for num, sc in top_nuevo:
+        if num not in cargados_nums and num not in salieron_hoy and not detalles[num]["enjaulado"]:
+            plan_b = num
+            break
+    return scores_ajustados, detalles_ajustados, plan_b
+
+
+# ═══════════════════════════════════════════════════
+# NUEVO: ANIMAL ESPEJO (análisis 6 meses)
+# ═══════════════════════════════════════════════════
+def calcular_animal_espejo(df, congelados):
+    """Para cada animal congelado, busca qué animal suele salir después de que se destapa."""
+    if df.empty or not congelados:
+        return {}
+
+    nums = df["numero"].tolist()
+    total = len(nums)
+    esp ejos = {}
+
+    for num_congelado in congelados:
+        # Encontrar todas las "sequías" de este animal
+        posiciones = [i for i, n in enumerate(nums) if n == num_congelado]
+        if not posiciones:
+            continue
+
+        # Buscar los que vinieron después de cada sequía larga (>=15 sorteos)
+        liberadores = Counter()
+        prev = -1
+        for pos in posiciones:
+            if prev >= 0:
+                gap = pos - prev
+                if gap >= UMBRAL_ESPEJO:
+                    # El animal que vino en la posición prev+1 (el "rompe-sequía")
+                    if prev + 1 < total:
+                        liberadores[nums[prev + 1]] += 1
+            prev = pos
+
+        # También el que vino en la última sequía (si estamos en una)
+        if prev >= 0:
+            gap_actual = total - 1 - prev
+            if gap_actual >= UMBRAL_ESPEJO:
+                pass  # Ya estamos en sequía, esperando quien rompe
+
+        if liberadores:
+            esp ejos[num_congelado] = liberadores.most_common(3)
+
+    return esp ejos
+
+
+def predecir_proximo_espejo(df, congelados):
+    """Si un animal está en sequía AHORA, sugiere los animales que suelen romper sequías similares."""
+    if df.empty or not congelados:
+        return []
+
+    esp ejos = calcular_animal_espejo(df, congelados)
+    recomendaciones = []
+
+    for num_congelado, tops in esp ejos.items():
+        for num_liberador, veces in tops:
+            recomendaciones.append({
+                "congelado": num_congelado,
+                "liberador": num_liberador,
+                "veces": veces
+            })
+
+    # Ordenar por frecuencia
+    recomendaciones.sort(key=lambda x: x["veces"], reverse=True)
+
+    # Quitar duplicados de liberador
+    vistos = set()
+    finales = []
+    for r in recomendaciones:
+        if r["liberador"] not in vistos:
+            finales.append(r)
+            vistos.add(r["liberador"])
+
+    return finales[:5]
+
+
+# ═══════════════════════════════════════════════════
+# ALERTA REVENTÓN
 # ═══════════════════════════════════════════════════
 def calcular_alerta_reventon(df, detalles, ritmos, salieron_hoy, congelados, penal_ayer):
     total = len(df)
@@ -256,19 +340,15 @@ def calcular_alerta_reventon(df, detalles, ritmos, salieron_hoy, congelados, pen
         if not pos: continue
         atraso = total - 1 - pos[-1]
         ratio = atraso / ritmo
-
         if not (0.9 <= ratio <= 1.1): continue
         if detalles[num]["freq_20"] == 0: continue
         if detalles[num]["jales_in"] < 1: continue
         if detalles[num]["atraso"] >= 60: continue
-
         distancia = abs(ratio - 1.0)
         if distancia <= 0.05: confianza = "ALTA"
         elif distancia <= 0.10: confianza = "MEDIA"
         else: confianza = "BAJA"
-
         sorteos_restantes = max(1, int(ritmo - atraso)) if atraso < ritmo else 1
-
         alertas.append({
             "num": num, "ratio": round(ratio, 2), "atraso": atraso,
             "ritmo": ritmo, "ventana": sorteos_restantes,
@@ -283,8 +363,7 @@ def calcular_fijo_del_dia(df, scores, detalles, ritmos, salieron_hoy, congelados
     total = len(df)
     candidatos = []
     for num in ANIMALITOS_DICT.keys():
-        if num in salieron_hoy: continue
-        if num in congelados: continue
+        if num in salieron_hoy or num in congelados: continue
         if num not in ritmos or ritmos[num]["promedio"] >= 500: continue
         pos = ritmos[num]["apariciones"]
         if not pos: continue
@@ -306,21 +385,15 @@ def calcular_fijo_del_dia(df, scores, detalles, ritmos, salieron_hoy, congelados
 
 
 # ═══════════════════════════════════════════════════
-# MEJORA 1 + 2: ML POR ECOSISTEMA
+# ML POR ECOSISTEMA
 # ═══════════════════════════════════════════════════
 def entrenar_modelo_ml(df, eco_top):
-    """Entrena un modelo que predice si un animal del ecosistema top va a salir."""
     try:
         nums = df["numero"].tolist()
         total = len(nums)
-        if total < 500:
-            return None, "Datos insuficientes"
-
-        # Filtrar solo animales del ecosistema top
+        if total < 500: return None, "Datos insuficientes"
         animales_eco = ECOSISTEMAS.get(eco_top, [])
-        if not animales_eco:
-            return None, "Ecosistema sin animales"
-
+        if not animales_eco: return None, "Ecosistema sin animales"
         X, y = [], []
         for i in range(100, total - 5, 6):
             v60 = nums[max(0, i - 60):i]
@@ -332,14 +405,10 @@ def entrenar_modelo_ml(df, eco_top):
                 for j in range(i - 1, -1, -1):
                     if nums[j] == num:
                         atraso = i - 1 - j; break
-                # Cuántas veces sale el ecosistema top en los últimos 20
                 eco_freq = sum(1 for n in v20 if n in animales_eco)
                 X.append([f60, f20, f10, min(atraso, 100), eco_freq])
                 y.append(1 if num in nums[i:i + 5] else 0)
-
-        if len(X) < 100:
-            return None, f"Muestras insuficientes ({len(X)})"
-
+        if len(X) < 100: return None, f"Muestras insuficientes ({len(X)})"
         modelo = RandomForestClassifier(n_estimators=30, max_depth=6, random_state=42, n_jobs=-1)
         modelo.fit(np.array(X), np.array(y))
         return modelo, f"Entrenado con {len(X)} muestras · Eco: {eco_top}"
@@ -348,15 +417,12 @@ def entrenar_modelo_ml(df, eco_top):
 
 
 def predecir_ml(modelo, df, eco_top):
-    """Predice probabilidades solo para animales del ecosistema top."""
     try:
         nums = df["numero"].tolist()
         total = len(nums)
         v60 = nums[-60:]; v20 = nums[-20:]; v10 = nums[-10:]
         animales_eco = ECOSISTEMAS.get(eco_top, [])
-        if not animales_eco:
-            return []
-
+        if not animales_eco: return []
         resultados = []
         for num in ANIMALITOS_DICT.keys():
             f60 = v60.count(num); f20 = v20.count(num); f10 = v10.count(num)
@@ -374,27 +440,18 @@ def predecir_ml(modelo, df, eco_top):
         return []
 
 
-# ═══════════════════════════════════════════════════
-# MEJORA 2: CONSENSO ESTRICTO
-# ═══════════════════════════════════════════════════
-def calcular_ensemble(df, fijo_candidatos, predicciones_ml, jales_aprendidos, detalles, salieron_hoy, congelados, penal_ayer):
-    """Ensemble con CONSENSO ESTRICTO:
-    - El Top 1 del estadístico debe estar en el Top 5 del ML.
-    - Si no, penalty fuerte.
-    """
+def calcular_ensemble(df, fijo_candidatos, predicciones_ml, jales_aprendidos, detalles, salieron_hoy, congelados, penal_ayer, carga_banca):
     ultimos_10 = df.tail(10)["numero"].tolist()
     jales_entrantes = Counter()
     for nr in ultimos_10:
         for siguiente, c in jales_aprendidos.get(nr, Counter()).most_common(3):
             jales_entrantes[siguiente] += c
     max_jal = max(jales_entrantes.values()) if jales_entrantes else 1
-
     fijo_scores = {c["num"]: round(c["prob"] * 100, 2) for c in fijo_candidatos[:20]}
     ml_scores = {p["num"]: p["prob_ml"] for p in predicciones_ml}
     jal_scores = {n: round(jales_entrantes.get(n, 0) / max_jal * 100, 2) for n in ANIMALITOS_DICT.keys()}
-
-    # Top 5 del ML
     top5_ml = set([p["num"] for p in predicciones_ml[:5]])
+    cargados_nums = set([c["num"] for c in carga_banca])
 
     ensemble = []
     for num in ANIMALITOS_DICT.keys():
@@ -403,37 +460,25 @@ def calcular_ensemble(df, fijo_candidatos, predicciones_ml, jales_aprendidos, de
         s_ml = ml_scores.get(num, 0)
         s_jal = jal_scores.get(num, 0)
         score = s_fijo * 0.40 + s_ml * 0.35 + s_jal * 0.25
-
-        if num in salieron_hoy:
-            score *= 0.05
-        if detalles[num]["atraso_hoy"] <= 1:
-            score *= 0.3
-        if num in penal_ayer:
-            score *= 0.80
-
-        # CONSENSO ESTRICTO
+        if num in salieron_hoy: score *= 0.05
+        if detalles[num]["atraso_hoy"] <= 1: score *= 0.3
+        if num in penal_ayer: score *= 0.80
+        if num in cargados_nums: score *= 0.50
         en_top5_ml = num in top5_ml
         ensemble.append({
             "num": num, "score": round(score, 2),
             "s_fijo": s_fijo, "s_ml": s_ml, "s_jal": s_jal,
-            "en_top5_ml": en_top5_ml
+            "en_top5_ml": en_top5_ml,
+            "cargado": num in cargados_nums
         })
-
     ensemble.sort(key=lambda x: x["score"], reverse=True)
     top_ens = ensemble[0] if ensemble else None
     if top_ens is None:
         return ensemble, 0, "SIN DATOS", None
-
-    # Verificar consenso del TOP ensemble
     fuentes_apoyo = 0
-    if top_ens["num"] in [c["num"] for c in fijo_candidatos[:3]]:
-        fuentes_apoyo += 1
-    if top_ens["en_top5_ml"]:
-        fuentes_apoyo += 1
-    if top_ens["num"] in [n for n, _ in jales_entrantes.most_common(3)]:
-        fuentes_apoyo += 1
-
-    # CONSENSO ESTRICTO: si el top no está en Top 5 ML → penalty
+    if top_ens["num"] in [c["num"] for c in fijo_candidatos[:3]]: fuentes_apoyo += 1
+    if top_ens["en_top5_ml"]: fuentes_apoyo += 1
+    if top_ens["num"] in [n for n, _ in jales_entrantes.most_common(3)]: fuentes_apoyo += 1
     if not top_ens["en_top5_ml"]:
         top_ens["score"] = round(top_ens["score"] * 0.6, 2)
         consenso = "Consenso Bajo - Sin jugada segura"
@@ -441,7 +486,6 @@ def calcular_ensemble(df, fijo_candidatos, predicciones_ml, jales_aprendidos, de
         if fuentes_apoyo >= 3: consenso = "ALTO"
         elif fuentes_apoyo == 2: consenso = "MEDIO"
         else: consenso = "BAJO"
-
     return ensemble, fuentes_apoyo, consenso, top_ens
 
 
@@ -525,10 +569,7 @@ def motor_casi_adivino(df):
     ritmos = calcular_ritmo_historico(df)
     congelados = calcular_congelados(df, ritmos)
     penal_ayer = calcular_penal_ayer(df)
-
-    # MEJORA 3: matriz por día de semana
     prob_dia_semana = calcular_prob_dia_semana(df, ultima_fecha_dt)
-    # Umbral: si el animal está por debajo del 1.5% (raro en ese día), penalizar
     umbral_bajo = 1.5
 
     scores = {}; detalles = {}
@@ -539,7 +580,6 @@ def motor_casi_adivino(df):
         n_f20 = f20 / max_f20 if max_f20 else 0
         n_atr = atr / max_atr if max_atr else 0
         n_jal = jal / max_jal if max_jal else 0
-
         bonus_caliente = 0.08 if f30 >= 3 else (0.04 if f30 == 2 else 0)
         penal_frio = 0
         if atr > 60: penal_frio = -0.35
@@ -551,26 +591,20 @@ def motor_casi_adivino(df):
         elif atr_hoy == 2: penal_reciente = -0.30
         elif atr_hoy == 3: penal_reciente = -0.20
         elif atr_hoy == 4: penal_reciente = -0.10
-
         score = n_fv*0.20 + n_f20*0.20 + n_atr*0.20 + n_jal*0.25 + bonus_caliente + penal_frio + penal_reciente
-
         if fv == 0: score *= 0.4
         if atr >= DESCARTE_ATRASO: score = 0
         if num in congelados: score *= 0.10
         if num in penal_ayer: score *= 0.80
-
-        # MEJORA 3: penalización por día de semana bajo
         prob_dia = prob_dia_semana.get(num, 0)
-        if prob_dia < umbral_bajo:
-            score *= 0.8
-
+        if prob_dia < umbral_bajo: score *= 0.8
         scores[num] = round(max(score, 0) * 100, 2)
         detalles[num] = {
             "freq_ventana": fv, "freq_20": f20, "atraso": atr, "atraso_hoy": atr_hoy,
             "jales_in": jal, "caliente": bonus_caliente > 0,
             "penal": penal_frio < 0, "enjaulado": atr >= DESCARTE_ATRASO,
             "congelado": num in congelados, "penal_ayer": num in penal_ayer,
-            "prob_dia": prob_dia
+            "prob_dia": prob_dia, "cargado_banca": False
         }
 
     top_ordenado = sorted(scores.items(), key=lambda x: x[1], reverse=True)
@@ -627,7 +661,7 @@ def armar_resultados(scores, detalles, top_ordenado, atrasos, salieron_hoy, cong
 
 def main():
     st.title("🐾 Mega Granjita IA")
-    st.caption("Ecosistemas · Consenso Estricto · Día de Semana · Ensemble · ML")
+    st.caption("Ecosistemas · Consenso · Anti-Bloqueo · Animal Espejo · ML")
 
     if st.button("🔄 Recargar datos"):
         st.cache_data.clear()
@@ -640,42 +674,64 @@ def main():
         st.error("No se pudieron cargar datos.")
         return
 
-    resultado_motor = motor_casi_adivino(df)
-    if not resultado_motor:
+    motor = motor_casi_adivino(df)
+    if not motor:
         st.warning("Datos insuficientes.")
         return
 
-    scores = resultado_motor["scores"]
-    detalles = resultado_motor["detalles"]
-    top_ordenado = resultado_motor["top_ordenado"]
-    jales_aprendidos = resultado_motor["jales_aprendidos"]
-    alineaciones = resultado_motor["alineaciones"]
-    fecha_dia_anterior = resultado_motor["fecha_dia_anterior"]
-    ritmos = resultado_motor["ritmos"]
-    salieron_hoy = resultado_motor["salieron_hoy"]
-    congelados = resultado_motor["congelados"]
-    penal_ayer = resultado_motor["penal_ayer"]
-    prob_dia_semana = resultado_motor["prob_dia_semana"]
+    scores = motor["scores"]
+    detalles = motor["detalles"]
+    top_ordenado = motor["top_ordenado"]
+    jales_aprendidos = motor["jales_aprendidos"]
+    alineaciones = motor["alineaciones"]
+    fecha_dia_anterior = motor["fecha_dia_anterior"]
+    ritmos = motor["ritmos"]
+    salieron_hoy = motor["salieron_hoy"]
+    congelados = motor["congelados"]
+    penal_ayer = motor["penal_ayer"]
+    prob_dia_semana = motor["prob_dia_semana"]
 
-    individual, top3, tripleta_alt = armar_resultados(scores, detalles, top_ordenado, resultado_motor["atrasos"], salieron_hoy, congelados)
+    # ANTI-BLOQUEO
+    carga_banca = calcular_carga_banca(df, scores, detalles, salieron_hoy)
+    scores_ajustados, detalles_ajustados, plan_b = aplicar_anti_bloqueo(df, scores, detalles, salieron_hoy, carga_banca)
+    top_ordenado_ajustado = sorted(scores_ajustados.items(), key=lambda x: x[1], reverse=True)
+
+    individual, top3, tripleta_alt = armar_resultados(scores_ajustados, detalles_ajustados, top_ordenado_ajustado, motor["atrasos"], salieron_hoy, congelados)
     ultimo = df.iloc[-1]
 
-    st.caption(f"📅 Día: {ultimo['fecha']} · Salieron hoy: {len(salieron_hoy)} · Congelados: {len(congelados)} · Penalizados ayer: {len(penal_ayer)}")
+    st.caption(f"📅 Día: {ultimo['fecha']} · Hoy: {len(salieron_hoy)} · Congelados: {len(congelados)} · Ayer: {len(penal_ayer)} · Cargados: {len(carga_banca)}")
 
-    # ═══════════════════════════════════════════════
-    # MEJORA 1: ECOSISTEMA TOP
-    # ═══════════════════════════════════════════════
+    # ECOSISTEMA
     eco_top, eco_scores = calcular_ecosistema_probable(df)
     if eco_top:
         st.markdown("## 🌍 ECOSISTEMA PROBABLE HOY")
         st.markdown(f"### 🎯 **{eco_top}**")
-        st.caption("Basado en frecuencia reciente + atraso del ecosistema")
-        st.markdown("**Ranking de ecosistemas:**")
+        st.markdown("**Ranking:**")
         for eco, sc in sorted(eco_scores.items(), key=lambda x: x[1], reverse=True):
             st.write(f"- {eco}: **{sc}%**")
         st.markdown("---")
 
-    # ALERTA DE REVENTÓN
+    # ANTI-BLOQUEO
+    if carga_banca:
+        st.markdown("## 🚫 MÓDULO ANTI-BLOQUEO DE BANCA")
+        st.caption("Animales que la banca podría estar 'aguantando'")
+        for c in carga_banca:
+            st.warning(f"**{fmt_num(c['num'])} {ANIMALITOS_DICT[c['num']]}** — Cargado · Score original {c['score_original']}% · Atraso hoy {c['atraso_hoy']} · Jales {c['jales']}")
+        if plan_b is not None:
+            st.success(f"🔄 **PLAN B: {fmt_num(plan_b)} {ANIMALITOS_DICT[plan_b]}**")
+        st.markdown("---")
+
+    # ANIMAL ESPEJO
+    if congelados:
+        espejos = predecir_proximo_espejo(df, congelados)
+        if espejos:
+            st.markdown("## 🪞 ANIMAL ESPEJO (rompe-sequías)")
+            st.caption("Basado en 6 meses: ¿qué animal suele salir después de las sequías largas?")
+            for e in espejos:
+                st.info(f"**{fmt_num(e['liberador'])} {ANIMALITOS_DICT[e['liberador']]}** — Ha roto sequías {e['veces']} veces (de {fmt_num(e['congelado'])} {ANIMALITOS_DICT[e['congelado']]})")
+            st.markdown("---")
+
+    # REVENTÓN
     alertas = calcular_alerta_reventon(df, detalles, ritmos, salieron_hoy, congelados, penal_ayer)
     if alertas:
         st.markdown("### 🚨 ALERTA DE REVENTÓN")
@@ -683,13 +739,13 @@ def main():
             emoji_conf = "🔥" if al["confianza"] == "ALTA" else ("🟡" if al["confianza"] == "MEDIA" else "🟢")
             urgent = " ← MÁS URGENTE" if i == 1 else ""
             st.markdown(f"**{emoji_conf} #{i} - {fmt_num(al['num'])} {ANIMALITOS_DICT[al['num']]}{urgent}**")
-            st.caption(f"Ratio: {al['ratio']} · Atraso: {al['atraso']} · Ritmo: {al['ritmo']} · Freq(20): {al['freq_20']} · Confianza: {al['confianza']}")
+            st.caption(f"Ratio: {al['ratio']} · Atraso: {al['atraso']} · Ritmo: {al['ritmo']} · Confianza: {al['confianza']}")
         st.markdown("---")
     else:
         st.info("🚨 Sin alertas de reventón.")
         st.markdown("---")
 
-    # ENSEMBLE CON CONSENSO ESTRICTO
+    # ENSEMBLE
     fijo_candidatos = []
     for num in ANIMALITOS_DICT.keys():
         if num in salieron_hoy or num in congelados: continue
@@ -715,30 +771,26 @@ def main():
         modelo, mensaje = entrenar_modelo_ml(df, eco_top)
     predicciones_ml = predecir_ml(modelo, df, eco_top) if modelo else []
 
-    ensemble, fuentes_apoyo, consenso, top_ens = calcular_ensemble(df, fijo_candidatos, predicciones_ml, jales_aprendidos, detalles, salieron_hoy, congelados, penal_ayer)
+    ensemble, fuentes_apoyo, consenso, top_ens = calcular_ensemble(df, fijo_candidatos, predicciones_ml, jales_aprendidos, detalles, salieron_hoy, congelados, penal_ayer, carga_banca)
 
     if top_ens:
-        st.markdown("### 🏆 RECOMENDACIÓN FINAL (Ensemble Estricto)")
+        st.markdown("### 🏆 RECOMENDACIÓN FINAL (Ensemble)")
         st.markdown(f"# {fmt_num(top_ens['num'])} - {ANIMALITOS_DICT[top_ens['num']]}")
         st.markdown(f"**Score combinado: {top_ens['score']}%**")
         col1, col2, col3 = st.columns(3)
         col1.metric("🎯 Fijo", f"{top_ens['s_fijo']}%")
         col2.metric("🤖 ML", f"{top_ens['s_ml']}%")
         col3.metric("🔗 Jales", f"{top_ens['s_jal']}%")
-
-        if consenso == "Consenso Bajo - Sin jugada segura":
-            st.error(f"❌ {consenso}")
-        elif consenso == "ALTO":
-            st.success(f"✅ CONSENSO ALTO · Las 3 fuentes apoyan")
-        elif consenso == "MEDIO":
-            st.info(f"🟡 CONSENSO MEDIO · 2 de 3 fuentes")
-        else:
-            st.warning(f"⚠️ CONSENSO BAJO")
-
+        if top_ens.get("cargado"): st.error("🚫 Este animal está marcado como CARGADO por la banca")
+        if consenso == "Consenso Bajo - Sin jugada segura": st.error(f"❌ {consenso}")
+        elif consenso == "ALTO": st.success(f"✅ CONSENSO ALTO · Las 3 fuentes apoyan")
+        elif consenso == "MEDIO": st.info(f"🟡 CONSENSO MEDIO · 2 de 3")
+        else: st.warning(f"⚠️ CONSENSO BAJO")
         st.markdown("**Top 3 del Ensemble:**")
         for i, item in enumerate(ensemble[:3], 1):
             ml_mark = " ✅ML" if item["en_top5_ml"] else " ❌ML"
-            st.write(f"**#{i} - {fmt_num(item['num'])} {ANIMALITOS_DICT[item['num']]}** — {item['score']}%{ml_mark}")
+            carga_mark = " 🚫" if item["cargado"] else ""
+            st.write(f"**#{i} - {fmt_num(item['num'])} {ANIMALITOS_DICT[item['num']]}** — {item['score']}%{ml_mark}{carga_mark}")
     st.markdown("---")
 
     # FIJO
@@ -746,7 +798,7 @@ def main():
         st.markdown("### 🎯 FIJO DEL DÍA")
         st.markdown(f"## {fmt_num(fijo['num'])} - {ANIMALITOS_DICT[fijo['num']]}")
         st.markdown(f"**Probabilidad: {round(fijo['prob']*100, 1)}%**")
-        st.caption(f"Atraso: {fijo['atraso']} · Ritmo: cada {fijo['ritmo']} · Ratio: {fijo['ratio']}")
+        st.caption(f"Atraso: {fijo['atraso']} · Ritmo: {fijo['ritmo']} · Ratio: {fijo['ratio']}")
     st.markdown("---")
 
     # ML
@@ -760,7 +812,7 @@ def main():
     st.markdown("---")
 
     # BACKTESTING
-    with st.spinner("Ejecutando backtesting..."):
+    with st.spinner("Backtesting..."):
         bt = backtesting_simple(df)
     if bt:
         st.markdown("### 📊 Backtesting del Fijo")
@@ -815,7 +867,8 @@ def main():
     st.markdown("### 🏆 Top 3")
     for i, item in enumerate(top3, 1):
         d = item["detalle"]
-        st.markdown(f"**#{i} - {item['numero']} {item['nombre']}** — {item['score']}%")
+        marca_carga = " 🚫 CARGADO" if d.get("cargado_banca") else ""
+        st.markdown(f"**#{i} - {item['numero']} {item['nombre']}** — {item['score']}%{marca_carga}")
         st.caption(f"Freq(60): {d['freq_ventana']} | Freq(20): {d['freq_20']} | Atraso: {d['atraso']} | Jales: {d['jales_in']}")
     st.markdown("---")
 
@@ -844,11 +897,8 @@ def main():
     with st.expander("📅 Ver probabilidad por día de semana"):
         if prob_dia_semana:
             top_dia = sorted(prob_dia_semana.items(), key=lambda x: x[1], reverse=True)[:10]
-            st.markdown(f"**Top 10 con más probabilidad para hoy:**")
             for num, p in top_dia:
                 st.write(f"- {fmt_num(num)} {ANIMALITOS_DICT[num]}: {p}%")
-        else:
-            st.write("Sin datos suficientes.")
 
     with st.expander("🚫 Ver animales congelados"):
         if congelados:
