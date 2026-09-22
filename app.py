@@ -210,9 +210,6 @@ def calcular_prob_dia_semana(df, fecha_actual=None):
     return {num: round(c / total_dia * 100, 2) for num, c in conteo.items()}
 
 
-# ═══════════════════════════════════════════════════
-# NUEVO: MÓDULO ANTI-BLOQUEO DE BANCA
-# ═══════════════════════════════════════════════════
 def calcular_carga_banca(df, scores, detalles, salieron_hoy):
     total = len(df)
     fecha_hoy = df["fecha"].iloc[-1]
@@ -253,56 +250,45 @@ def aplicar_anti_bloqueo(df, scores, detalles, salieron_hoy, carga_banca):
 
 
 # ═══════════════════════════════════════════════════
-# NUEVO: ANIMAL ESPEJO (análisis 6 meses)
+# ANIMAL ESPEJO (CORREGIDO)
 # ═══════════════════════════════════════════════════
 def calcular_animal_espejo(df, congelados):
-    """Para cada animal congelado, busca qué animal suele salir después de que se destapa."""
     if df.empty or not congelados:
         return {}
 
     nums = df["numero"].tolist()
     total = len(nums)
-    esp ejos = {}
+    espejos = {}
 
     for num_congelado in congelados:
-        # Encontrar todas las "sequías" de este animal
         posiciones = [i for i, n in enumerate(nums) if n == num_congelado]
         if not posiciones:
             continue
 
-        # Buscar los que vinieron después de cada sequía larga (>=15 sorteos)
         liberadores = Counter()
         prev = -1
         for pos in posiciones:
             if prev >= 0:
                 gap = pos - prev
                 if gap >= UMBRAL_ESPEJO:
-                    # El animal que vino en la posición prev+1 (el "rompe-sequía")
                     if prev + 1 < total:
                         liberadores[nums[prev + 1]] += 1
             prev = pos
 
-        # También el que vino en la última sequía (si estamos en una)
-        if prev >= 0:
-            gap_actual = total - 1 - prev
-            if gap_actual >= UMBRAL_ESPEJO:
-                pass  # Ya estamos en sequía, esperando quien rompe
-
         if liberadores:
-            esp ejos[num_congelado] = liberadores.most_common(3)
+            espejos[num_congelado] = liberadores.most_common(3)
 
-    return esp ejos
+    return espejos
 
 
 def predecir_proximo_espejo(df, congelados):
-    """Si un animal está en sequía AHORA, sugiere los animales que suelen romper sequías similares."""
     if df.empty or not congelados:
         return []
 
-    esp ejos = calcular_animal_espejo(df, congelados)
+    espejos = calcular_animal_espejo(df, congelados)
     recomendaciones = []
 
-    for num_congelado, tops in esp ejos.items():
+    for num_congelado, tops in espejos.items():
         for num_liberador, veces in tops:
             recomendaciones.append({
                 "congelado": num_congelado,
@@ -310,10 +296,8 @@ def predecir_proximo_espejo(df, congelados):
                 "veces": veces
             })
 
-    # Ordenar por frecuencia
     recomendaciones.sort(key=lambda x: x["veces"], reverse=True)
 
-    # Quitar duplicados de liberador
     vistos = set()
     finales = []
     for r in recomendaciones:
@@ -324,9 +308,6 @@ def predecir_proximo_espejo(df, congelados):
     return finales[:5]
 
 
-# ═══════════════════════════════════════════════════
-# ALERTA REVENTÓN
-# ═══════════════════════════════════════════════════
 def calcular_alerta_reventon(df, detalles, ritmos, salieron_hoy, congelados, penal_ayer):
     total = len(df)
     alertas = []
@@ -384,9 +365,6 @@ def calcular_fijo_del_dia(df, scores, detalles, ritmos, salieron_hoy, congelados
     return candidatos[0] if candidatos else None
 
 
-# ═══════════════════════════════════════════════════
-# ML POR ECOSISTEMA
-# ═══════════════════════════════════════════════════
 def entrenar_modelo_ml(df, eco_top):
     try:
         nums = df["numero"].tolist()
@@ -691,7 +669,6 @@ def main():
     penal_ayer = motor["penal_ayer"]
     prob_dia_semana = motor["prob_dia_semana"]
 
-    # ANTI-BLOQUEO
     carga_banca = calcular_carga_banca(df, scores, detalles, salieron_hoy)
     scores_ajustados, detalles_ajustados, plan_b = aplicar_anti_bloqueo(df, scores, detalles, salieron_hoy, carga_banca)
     top_ordenado_ajustado = sorted(scores_ajustados.items(), key=lambda x: x[1], reverse=True)
@@ -701,7 +678,6 @@ def main():
 
     st.caption(f"📅 Día: {ultimo['fecha']} · Hoy: {len(salieron_hoy)} · Congelados: {len(congelados)} · Ayer: {len(penal_ayer)} · Cargados: {len(carga_banca)}")
 
-    # ECOSISTEMA
     eco_top, eco_scores = calcular_ecosistema_probable(df)
     if eco_top:
         st.markdown("## 🌍 ECOSISTEMA PROBABLE HOY")
@@ -711,17 +687,14 @@ def main():
             st.write(f"- {eco}: **{sc}%**")
         st.markdown("---")
 
-    # ANTI-BLOQUEO
     if carga_banca:
         st.markdown("## 🚫 MÓDULO ANTI-BLOQUEO DE BANCA")
-        st.caption("Animales que la banca podría estar 'aguantando'")
         for c in carga_banca:
             st.warning(f"**{fmt_num(c['num'])} {ANIMALITOS_DICT[c['num']]}** — Cargado · Score original {c['score_original']}% · Atraso hoy {c['atraso_hoy']} · Jales {c['jales']}")
         if plan_b is not None:
             st.success(f"🔄 **PLAN B: {fmt_num(plan_b)} {ANIMALITOS_DICT[plan_b]}**")
         st.markdown("---")
 
-    # ANIMAL ESPEJO
     if congelados:
         espejos = predecir_proximo_espejo(df, congelados)
         if espejos:
@@ -731,7 +704,6 @@ def main():
                 st.info(f"**{fmt_num(e['liberador'])} {ANIMALITOS_DICT[e['liberador']]}** — Ha roto sequías {e['veces']} veces (de {fmt_num(e['congelado'])} {ANIMALITOS_DICT[e['congelado']]})")
             st.markdown("---")
 
-    # REVENTÓN
     alertas = calcular_alerta_reventon(df, detalles, ritmos, salieron_hoy, congelados, penal_ayer)
     if alertas:
         st.markdown("### 🚨 ALERTA DE REVENTÓN")
@@ -745,7 +717,6 @@ def main():
         st.info("🚨 Sin alertas de reventón.")
         st.markdown("---")
 
-    # ENSEMBLE
     fijo_candidatos = []
     for num in ANIMALITOS_DICT.keys():
         if num in salieron_hoy or num in congelados: continue
@@ -781,7 +752,7 @@ def main():
         col1.metric("🎯 Fijo", f"{top_ens['s_fijo']}%")
         col2.metric("🤖 ML", f"{top_ens['s_ml']}%")
         col3.metric("🔗 Jales", f"{top_ens['s_jal']}%")
-        if top_ens.get("cargado"): st.error("🚫 Este animal está marcado como CARGADO por la banca")
+        if top_ens.get("cargado"): st.error("🚫 CARGADO por la banca")
         if consenso == "Consenso Bajo - Sin jugada segura": st.error(f"❌ {consenso}")
         elif consenso == "ALTO": st.success(f"✅ CONSENSO ALTO · Las 3 fuentes apoyan")
         elif consenso == "MEDIO": st.info(f"🟡 CONSENSO MEDIO · 2 de 3")
@@ -793,7 +764,6 @@ def main():
             st.write(f"**#{i} - {fmt_num(item['num'])} {ANIMALITOS_DICT[item['num']]}** — {item['score']}%{ml_mark}{carga_mark}")
     st.markdown("---")
 
-    # FIJO
     if fijo:
         st.markdown("### 🎯 FIJO DEL DÍA")
         st.markdown(f"## {fmt_num(fijo['num'])} - {ANIMALITOS_DICT[fijo['num']]}")
@@ -801,7 +771,6 @@ def main():
         st.caption(f"Atraso: {fijo['atraso']} · Ritmo: {fijo['ritmo']} · Ratio: {fijo['ratio']}")
     st.markdown("---")
 
-    # ML
     st.markdown("### 🤖 Predicción Machine Learning")
     if modelo:
         st.success(f"✅ {mensaje}")
@@ -811,7 +780,6 @@ def main():
         st.warning(f"⚠️ {mensaje}")
     st.markdown("---")
 
-    # BACKTESTING
     with st.spinner("Backtesting..."):
         bt = backtesting_simple(df)
     if bt:
@@ -835,7 +803,6 @@ def main():
     st.caption(f"Fecha: {ultimo['fecha']}")
     st.markdown("---")
 
-    # ANIMALES DE HOY
     fecha_hoy_real = df["fecha"].iloc[-1]
     df_hoy = df[df["fecha"] == fecha_hoy_real].reset_index(drop=True)
     if not df_hoy.empty:
