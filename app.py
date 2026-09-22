@@ -25,7 +25,7 @@ st.set_page_config(
 )
 
 GOOGLE_SHEET_ID = "1aP-qP6YXz7HcXuy77GXX4xqMKE3-noLP_jvQflqvE-I"
-GOOGLE_SHEET_URL = f"https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID}/export?format=csv"
+GOOGLE_SHEET_URL = f"https://docs.google.com/spreadsheets/d/{GOOGLE_SHEET_ID}/export?format=csv&t={int(time.time())}"
 
 SORTEOS_POR_DIA = 12
 DIAS_VENTANA = 5
@@ -347,7 +347,6 @@ def motor_casi_adivino(df):
 
     # --- FECHA REAL DE HOY Y LÍMITE ESTRICTO DE 12 SORTEOS ---
     fecha_hoy = fecha_hoy_ve()
-    # Aquí aplicamos el límite de 12 animales únicos para el día de hoy
     df_hoy = df[df["fecha"] == fecha_hoy].drop_duplicates(subset=["numero"]).tail(12)
     total_hoy = len(df_hoy)
     salieron_hoy = set(df_hoy["numero"].tolist())
@@ -577,15 +576,17 @@ def main():
     st.caption(f"Fecha: {ultimo['fecha']}")
     st.markdown("---")
 
-    # --- CORRECCIÓN: SOLO 12 ANIMALES Y SIN REPETIDOS EN EL HISTORIAL ---
-    if fecha_dia_anterior:
-        st.markdown(f"### 🔁 Animales del {fecha_dia_anterior}")
-        df_dia = df[df["fecha"] == fecha_dia_anterior].drop_duplicates(subset=["numero"]).tail(12).reset_index(drop=True)
-        for i, row in df_dia.iterrows():
+    # --- CORRECCIÓN: MOSTRAR ANIMALES DEL DÍA DE HOY EN VEZ DEL DÍA ANTERIOR ---
+    st.markdown(f"### 🔁 Animales del {fecha_hoy_ve()}")
+    df_hoy = df[df["fecha"] == fecha_hoy_ve()].drop_duplicates(subset=["numero"]).tail(12).reset_index(drop=True)
+    if not df_hoy.empty:
+        for i, row in df_hoy.iterrows():
             num = int(row["numero"])
             d = detalles.get(num, {})
             st.write(f"{i+1}. **{fmt_num(num)} - {row['nombre']}** (atraso: {d.get('atraso', '?')})")
-        st.markdown("---")
+    else:
+        st.write("Aún no hay resultados de hoy en la hoja de cálculo.")
+    st.markdown("---")
 
     if individual:
         st.markdown("### 🎯 Animal Individual")
